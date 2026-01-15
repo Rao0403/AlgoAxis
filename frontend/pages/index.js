@@ -213,8 +213,8 @@ export default function Home() {
           ))}
         </div>
 
-        <div className="row g-3 mb-5">
-          <div className="col-md-6 fade-in-up d-flex">
+        <div className="stats-leaderboard-row mb-5">
+          <div className="stats-leaderboard-card fade-in-up">
             <div className="feature-card h-100">
               <h3 className="card-title">Quick Stats</h3>
               <p className="card-text mb-4">
@@ -264,7 +264,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="col-md-6 fade-in-up d-flex" style={{ animationDelay: '0.1s' }}>
+          <div className="stats-leaderboard-card fade-in-up" style={{ animationDelay: '0.1s' }}>
             <div className="feature-card h-100">
               <h3 className="card-title">Global Leaderboard</h3>
               <p className="card-text mb-4">See how you rank against other users</p>
@@ -321,7 +321,6 @@ export default function Home() {
     </div>
   );
 }
-
 
 
 
