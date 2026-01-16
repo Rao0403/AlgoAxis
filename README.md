@@ -158,14 +158,5 @@ npm run start
 - Auth hardening (sessions or JWT, server-side checks, rate limiting)
 - Performance and scaling improvements
 
-## Contributing
-- Create a feature branch and open a PR.
-- Run linting before submitting:
-```bash
-cd frontend
-npm run lint
-```
-- No automated test suite is defined yet.
-
 ## License
 - To be defined.
