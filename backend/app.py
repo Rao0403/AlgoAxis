@@ -67,7 +67,7 @@ def get_user_group_count(cursor, user_id):
 def generate_invite_code(cursor, length=12, max_attempts=5):
     for _ in range(max_attempts):
         code = secrets.token_urlsafe(length)[:20]
-        cursor.execute('SELECT id FROM groups WHERE invite_code = %s', (code,))
+        cursor.execute('SELECT id FROM `groups` WHERE invite_code = %s', (code,))
         if not cursor.fetchone():
             return code
     return None
@@ -1180,7 +1180,7 @@ def create_group():
             conn.close()
             return jsonify({'success': False, 'error': 'User already in maximum number of groups'}), 400
 
-        cursor.execute('SELECT id FROM groups WHERE name = %s', (name,))
+        cursor.execute('SELECT id FROM `groups` WHERE name = %s', (name,))
         if cursor.fetchone():
             cursor.close()
             conn.close()
@@ -1250,7 +1250,7 @@ def join_group():
             return jsonify({'success': False, 'error': 'User already in maximum number of groups'}), 400
 
         cursor.execute(
-            'SELECT * FROM groups WHERE invite_code = %s AND is_active = TRUE',
+            'SELECT * FROM `groups` WHERE invite_code = %s AND is_active = TRUE',
             (invite_code,)
         )
         group = cursor.fetchone()
@@ -1323,7 +1323,7 @@ def list_my_groups():
             '''SELECT g.id, g.name, g.description, g.created_by, g.max_members, g.created_at,
                       gm.role,
                       (SELECT COUNT(*) FROM group_members gm2 WHERE gm2.group_id = g.id) as member_count
-               FROM groups g
+               FROM `groups` g
                JOIN group_members gm ON g.id = gm.group_id
                WHERE gm.user_id = %s
                ORDER BY g.created_at DESC''',
@@ -1365,7 +1365,7 @@ def get_group_details(group_id):
             '''SELECT g.id, g.name, g.description, g.created_by, g.invite_code, g.max_members,
                       g.created_at,
                       (SELECT COUNT(*) FROM group_members gm2 WHERE gm2.group_id = g.id) as member_count
-               FROM groups g
+               FROM `groups` g
                WHERE g.id = %s''',
             (group_id,)
         )
@@ -1465,7 +1465,7 @@ def leave_group(group_id):
                     'error': 'Admin cannot leave while other members exist'
                 }), 400
 
-            cursor.execute('DELETE FROM groups WHERE id = %s', (group_id,))
+            cursor.execute('DELETE FROM `groups` WHERE id = %s', (group_id,))
             conn.commit()
 
             cursor.close()
