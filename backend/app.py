@@ -13,6 +13,7 @@ import PyPDF2
 import io
 import json
 import secrets
+import requests
 
 # Load environment variables (for local dev; on EB use env vars from console)
 load_dotenv()
@@ -43,6 +44,8 @@ S3_BUCKET = os.getenv('S3_BUCKET_NAME')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+
+LEETCODE_GRAPHQL_URL = 'https://leetcode.com/graphql'
 
 # ================== HELPERS ==================
 
@@ -115,6 +118,105 @@ Resume excerpt:
     except Exception as e:
         print(f"Error extracting name: {e}")
         return "the candidate"
+
+# ================== LEETCODE SYNC HELPERS ==================
+
+def normalize_leetcode_question(question):
+    number = question.get('frontendQuestionId') or question.get('questionId')
+    title = question.get('title') or question.get('titleSlug')
+    difficulty = question.get('difficulty') or 'Easy'
+    status = (question.get('status') or '').strip().lower()
+
+    if not number or not title:
+        return None
+
+    is_solved = True
+    if status and status not in ('ac', 'accepted', 'solved'):
+        is_solved = False
+
+    return {
+        'number': str(number),
+        'title': title,
+        'difficulty': difficulty,
+        'status': status or 'unknown',
+        'is_solved': is_solved
+    }
+
+
+def fetch_leetcode_solved_questions(username):
+    query = '''
+    query userProfileUserQuestionProgressV2($username: String!, $pageNum: Int!, $numPerPage: Int!) {
+      userProfileUserQuestionProgressV2(userSlug: $username, pageNum: $pageNum, numPerPage: $numPerPage) {
+        questions {
+          questionId
+          frontendQuestionId
+          title
+          titleSlug
+          difficulty
+          status
+        }
+        totalNum
+      }
+    }
+    '''
+
+    page_num = 1
+    per_page = 50
+    max_pages = 40
+    collected = []
+    total_num = None
+
+    while page_num <= max_pages:
+        payload = {
+            'query': query,
+            'variables': {
+                'username': username,
+                'pageNum': page_num,
+                'numPerPage': per_page
+            }
+        }
+
+        response = requests.post(
+            LEETCODE_GRAPHQL_URL,
+            json=payload,
+            headers={'Content-Type': 'application/json'},
+            timeout=20
+        )
+
+        if response.status_code != 200:
+            raise ValueError('LeetCode request failed with status code %s' % response.status_code)
+
+        data = response.json()
+        if data.get('errors'):
+            raise ValueError('LeetCode returned an error response')
+
+        progress = (data.get('data') or {}).get('userProfileUserQuestionProgressV2')
+        if not progress:
+            if page_num == 1:
+                raise ValueError('LeetCode user not found or profile unavailable')
+            break
+
+        questions = progress.get('questions') or []
+        if total_num is None:
+            total_num = progress.get('totalNum') or 0
+
+        for question in questions:
+            normalized = normalize_leetcode_question(question)
+            if not normalized:
+                continue
+            if not normalized['is_solved']:
+                continue
+            collected.append(normalized)
+
+        if not questions:
+            break
+
+        if total_num and len(collected) >= total_num:
+            break
+
+        page_num += 1
+
+    return collected
 
 # ================== AUTH ENDPOINTS ==================
 
@@ -459,6 +561,81 @@ def analytics_summary():
         return jsonify({
             'total_problems': total,
             'total_points': total_points
+        }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ================== LEETCODE SYNC ==================
+
+@app.route('/api/leetcode/sync', methods=['POST'])
+def sync_leetcode():
+    try:
+        data = request.json or {}
+        user_id = data.get('user_id')
+        leetcode_username = data.get('leetcode_username')
+
+        if not user_id or not leetcode_username:
+            return jsonify({'error': 'user_id and leetcode_username required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if not user_exists(cursor, user_id):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+
+        try:
+            questions = fetch_leetcode_solved_questions(leetcode_username)
+        except ValueError as exc:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': str(exc)}), 502
+
+        added = 0
+        updated = 0
+
+        for question in questions:
+            number = question['number']
+            title = question['title']
+            difficulty = question['difficulty']
+            topic = 'LeetCode'
+            points = {'Easy': 10, 'Medium': 25, 'Hard': 50}.get(difficulty, 10)
+
+            cursor.execute(
+                'SELECT id FROM problems WHERE user_id = %s AND number = %s',
+                (user_id, number)
+            )
+            existing = cursor.fetchone()
+
+            if existing:
+                cursor.execute(
+                    '''UPDATE problems
+                       SET name = %s, difficulty = %s, topic = %s, points = %s
+                       WHERE id = %s''',
+                    (title, difficulty, topic, points, existing['id'])
+                )
+                updated += 1
+            else:
+                cursor.execute(
+                    '''INSERT INTO problems
+                       (user_id, number, name, difficulty, topic, summary, notes, points)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''',
+                    (user_id, number, title, difficulty, topic, '', '', points)
+                )
+                added += 1
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'leetcode_username': leetcode_username,
+            'total_synced': len(questions),
+            'added': added,
+            'updated': updated
         }), 200
 
     except Exception as e:

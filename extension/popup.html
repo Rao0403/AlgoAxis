@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AlgoAxis Sync</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>AlgoAxis Sync</h1>
+
+      <label for="leetcode-username">LeetCode Username</label>
+      <input id="leetcode-username" type="text" placeholder="e.g. john_doe" />
+
+      <div class="actions">
+        <button id="detect-session" type="button">Use AlgoAxis Session</button>
+      </div>
+
+      <div class="status" id="session-status">Not connected to an AlgoAxis session.</div>
+      <div class="status subtle" id="api-status">API: http://localhost:3000</div>
+
+      <button id="sync-btn" type="button" class="primary">Sync now</button>
+      <div class="status" id="sync-status"></div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

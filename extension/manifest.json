@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "AlgoAxis LeetCode Sync",
+  "version": "0.1.0",
+  "description": "Sync public LeetCode solved problems to AlgoAxis.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["*://*/api/*"],
+  "action": {
+    "default_title": "AlgoAxis Sync",
+    "default_popup": "popup.html"
+  }
+}
