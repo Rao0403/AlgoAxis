@@ -1193,7 +1193,7 @@ def create_group():
             return jsonify({'success': False, 'error': 'Could not generate invite code'}), 500
 
         cursor.execute(
-            '''INSERT INTO groups (name, description, created_by, invite_code, max_members)
+            '''INSERT INTO `groups` (name, description, created_by, invite_code, max_members)
                VALUES (%s, %s, %s, %s, %s)''',
             (name, description, user_id, invite_code, max_members)
         )
