@@ -42,8 +42,8 @@ CREATE TABLE IF NOT EXISTS resumes (
     INDEX idx_user_id (user_id)
 );
 
--- Groups table
-CREATE TABLE IF NOT EXISTS groups (
+-- Groups table (escape reserved keyword)
+CREATE TABLE IF NOT EXISTS `groups` (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
     description TEXT,
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS group_members (
     user_id INT NOT NULL,
     role ENUM('admin', 'member') DEFAULT 'member',
     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE KEY unique_membership (group_id, user_id)
 );
