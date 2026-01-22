@@ -67,3 +67,80 @@ CREATE TABLE IF NOT EXISTS group_members (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE KEY unique_membership (group_id, user_id)
 );
+
+-- Contests table
+CREATE TABLE IF NOT EXISTS contests (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    group_id INT NOT NULL,
+    name VARCHAR(120) NOT NULL,
+    description TEXT,
+    created_by INT NOT NULL,
+    start_time DATETIME NOT NULL,
+    end_time DATETIME NOT NULL,
+    max_submissions_per_problem INT DEFAULT 3,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_group_id (group_id),
+    INDEX idx_contest_active (is_active)
+);
+
+-- Contest problems
+CREATE TABLE IF NOT EXISTS contest_problems (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    contest_id INT NOT NULL,
+    leetcode_number VARCHAR(50),
+    title VARCHAR(255) NOT NULL,
+    difficulty ENUM('Easy', 'Medium', 'Hard') NOT NULL,
+    prompt TEXT NOT NULL,
+    function_signature VARCHAR(255) NOT NULL,
+    base_points INT NOT NULL,
+    order_index INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (contest_id) REFERENCES contests(id) ON DELETE CASCADE,
+    INDEX idx_contest_id (contest_id)
+);
+
+-- Contest testcases (JSON payloads for function-style evaluation)
+CREATE TABLE IF NOT EXISTS contest_testcases (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    contest_problem_id INT NOT NULL,
+    input_json TEXT NOT NULL,
+    expected_output_json TEXT NOT NULL,
+    is_sample BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (contest_problem_id) REFERENCES contest_problems(id) ON DELETE CASCADE,
+    INDEX idx_contest_problem_id (contest_problem_id)
+);
+
+-- Contest participants
+CREATE TABLE IF NOT EXISTS contest_participants (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    contest_id INT NOT NULL,
+    user_id INT NOT NULL,
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (contest_id) REFERENCES contests(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_participant (contest_id, user_id)
+);
+
+-- Contest submissions
+CREATE TABLE IF NOT EXISTS contest_submissions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    contest_id INT NOT NULL,
+    contest_problem_id INT NOT NULL,
+    user_id INT NOT NULL,
+    language ENUM('python', 'java') NOT NULL,
+    code TEXT NOT NULL,
+    verdict ENUM('AC', 'WA', 'TLE', 'RE', 'CE') NOT NULL,
+    runtime_ms INT DEFAULT NULL,
+    elapsed_seconds INT DEFAULT 0,
+    score_awarded DECIMAL(10,3) DEFAULT 0,
+    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (contest_id) REFERENCES contests(id) ON DELETE CASCADE,
+    FOREIGN KEY (contest_problem_id) REFERENCES contest_problems(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_submission_lookup (contest_id, contest_problem_id, user_id),
+    INDEX idx_submission_time (submitted_at)
+);

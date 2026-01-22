@@ -14,6 +14,11 @@ import io
 import json
 import secrets
 import requests
+import subprocess
+import tempfile
+import textwrap
+import time
+import re
 
 # Load environment variables (for local dev; on EB use env vars from console)
 load_dotenv()
@@ -56,6 +61,14 @@ def get_db_connection():
 def user_exists(cursor, user_id):
     cursor.execute('SELECT id FROM users WHERE id = %s', (user_id,))
     return cursor.fetchone() is not None
+
+
+def get_group_membership(cursor, group_id, user_id):
+    cursor.execute(
+        'SELECT role FROM group_members WHERE group_id = %s AND user_id = %s',
+        (group_id, user_id)
+    )
+    return cursor.fetchone()
 
 
 def get_user_group_count(cursor, user_id):
@@ -217,6 +230,332 @@ def fetch_leetcode_solved_questions(username):
         page_num += 1
 
     return collected
+
+# ================== CONTEST HELPERS ==================
+
+JAVA_BASE_TYPES = {'int', 'long', 'double', 'boolean', 'String'}
+
+
+def parse_python_function_name(signature):
+    signature = signature.strip()
+    if signature.startswith('def '):
+        signature = signature[4:]
+    if '(' in signature:
+        return signature.split('(')[0].strip()
+    return signature.split()[0].strip()
+
+
+def parse_java_signature(signature):
+    signature = signature.strip()
+    if '(' not in signature or ')' not in signature:
+        raise ValueError('Invalid Java function signature')
+
+    head = signature.split('(')[0].strip()
+    parts = head.split()
+    if len(parts) < 2:
+        raise ValueError('Java signature must include return type and method name')
+
+    method_name = parts[-1].strip()
+    return_type = parts[-2].strip()
+
+    params_section = signature[signature.index('(') + 1:signature.rindex(')')].strip()
+    param_types = []
+    if params_section:
+        for param in params_section.split(','):
+            param = param.strip()
+            if not param:
+                continue
+            tokens = param.split()
+            param_types.append(tokens[0])
+
+    return method_name, return_type, param_types
+
+
+def java_type_dims(type_name):
+    dims = type_name.count('[]')
+    base = type_name.replace('[]', '')
+    return base, dims
+
+
+def validate_java_type(type_name):
+    base, dims = java_type_dims(type_name)
+    if base not in JAVA_BASE_TYPES:
+        return False
+    if dims > 2:
+        return False
+    return True
+
+
+def java_string_literal(value):
+    escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def java_literal(value, type_name):
+    base, dims = java_type_dims(type_name)
+
+    if dims == 0:
+        if base == 'String':
+            if value is None:
+                return 'null'
+            return java_string_literal(str(value))
+        if base == 'boolean':
+            return 'true' if bool(value) else 'false'
+        if base == 'double':
+            return f'{float(value)}'
+        if base == 'long':
+            return f'{int(value)}L'
+        return str(int(value))
+
+    if not isinstance(value, list):
+        raise ValueError('Expected array value for type %s' % type_name)
+
+    inner_type = base + '[]' * (dims - 1)
+    inner_literals = [java_literal(item, inner_type) for item in value]
+    return f'new {base}{"[]" * dims}{{{", ".join(inner_literals)}}}'
+
+
+def java_equals_expr(actual_var, expected_var, type_name):
+    base, dims = java_type_dims(type_name)
+
+    if dims == 0:
+        if base == 'String':
+            return f'({expected_var} == null ? {actual_var} == null : {expected_var}.equals({actual_var}))'
+        if base == 'double':
+            return f'Math.abs({actual_var} - {expected_var}) < 1e-9'
+        return f'{actual_var} == {expected_var}'
+
+    if base == 'double' and dims == 1:
+        return f'compareDoubleArray({actual_var}, {expected_var})'
+    if base == 'double' and dims == 2:
+        return f'compareDoubleMatrix({actual_var}, {expected_var})'
+
+    if dims == 1:
+        return f'java.util.Arrays.equals({actual_var}, {expected_var})'
+    return f'java.util.Arrays.deepEquals({actual_var}, {expected_var})'
+
+
+def build_python_runner(code, function_name, testcases_json):
+    runner = f"""
+import json
+import sys
+import time
+
+{code}
+
+def _normalize(value):
+    if isinstance(value, tuple):
+        return [_normalize(v) for v in value]
+    if isinstance(value, list):
+        return [_normalize(v) for v in value]
+    if isinstance(value, dict):
+        return {{k: _normalize(v) for k, v in value.items()}}
+    return value
+
+def _call(args):
+    if not isinstance(args, list):
+        args = [args]
+    return {function_name}(*args)
+
+def main():
+    testcases = json.loads(r'''{testcases_json}''')
+    start = time.time()
+    for idx, tc in enumerate(testcases):
+        expected = tc.get("expected")
+        result = _call(tc.get("input", []))
+        if _normalize(result) != _normalize(expected):
+            print("__RESULT__" + json.dumps({{"verdict": "WA", "failed_index": idx}}))
+            return
+    runtime_ms = int((time.time() - start) * 1000)
+    print("__RESULT__" + json.dumps({{"verdict": "AC", "runtime_ms": runtime_ms}}))
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print("__RESULT__" + json.dumps({{"verdict": "RE", "error": str(exc)}}))
+"""
+    return textwrap.dedent(runner)
+
+
+def run_python_submission(code, function_name, testcases, time_limit_sec=5):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        runner_path = os.path.join(temp_dir, 'runner.py')
+        testcases_json = json.dumps(testcases, ensure_ascii=True)
+        runner_code = build_python_runner(code, function_name, testcases_json)
+        with open(runner_path, 'w', encoding='utf-8') as handle:
+            handle.write(runner_code)
+
+        start = time.monotonic()
+        try:
+            result = subprocess.run(
+                ['python', runner_path],
+                capture_output=True,
+                text=True,
+                timeout=time_limit_sec
+            )
+        except subprocess.TimeoutExpired:
+            return {'verdict': 'TLE', 'runtime_ms': int(time_limit_sec * 1000)}
+
+        runtime_ms = int((time.monotonic() - start) * 1000)
+        if result.returncode != 0:
+            return {'verdict': 'RE', 'runtime_ms': runtime_ms}
+
+        verdict_payload = None
+        for line in result.stdout.splitlines():
+            if line.startswith('__RESULT__'):
+                payload_raw = line.replace('__RESULT__', '', 1)
+                try:
+                    verdict_payload = json.loads(payload_raw)
+                except json.JSONDecodeError:
+                    verdict_payload = None
+
+        if not verdict_payload:
+            return {'verdict': 'RE', 'runtime_ms': runtime_ms}
+
+        verdict_payload.setdefault('runtime_ms', runtime_ms)
+        return verdict_payload
+
+
+def build_java_runner(method_name, return_type, param_types, testcases):
+    helper_methods = """
+    static boolean compareDoubleArray(double[] a, double[] b) {
+        if (a == null || b == null) return a == b;
+        if (a.length != b.length) return false;
+        for (int i = 0; i < a.length; i++) {
+            if (Math.abs(a[i] - b[i]) >= 1e-9) return false;
+        }
+        return true;
+    }
+
+    static boolean compareDoubleMatrix(double[][] a, double[][] b) {
+        if (a == null || b == null) return a == b;
+        if (a.length != b.length) return false;
+        for (int i = 0; i < a.length; i++) {
+            if (!compareDoubleArray(a[i], b[i])) return false;
+        }
+        return true;
+    }
+    """
+
+    statements = []
+    for idx, testcase in enumerate(testcases):
+        inputs = testcase.get('input', [])
+        expected = testcase.get('expected')
+        if not isinstance(inputs, list):
+            inputs = [inputs]
+        if len(inputs) != len(param_types):
+            raise ValueError('Testcase input count does not match signature')
+
+        arg_names = []
+        for arg_index, (arg_value, arg_type) in enumerate(zip(inputs, param_types)):
+            arg_name = f'arg{idx}_{arg_index}'
+            arg_literal = java_literal(arg_value, arg_type)
+            statements.append(f'{arg_type} {arg_name} = {arg_literal};')
+            arg_names.append(arg_name)
+
+        expected_name = f'expected{idx}'
+        expected_literal = java_literal(expected, return_type)
+        statements.append(f'{return_type} {expected_name} = {expected_literal};')
+        result_name = f'result{idx}'
+        statements.append(f'{return_type} {result_name} = solution.{method_name}({", ".join(arg_names)});')
+        comparison = java_equals_expr(result_name, expected_name, return_type)
+        statements.append(
+            f'if (!({comparison})) {{ System.out.println("__RESULT__' +
+            f'{{\\\"verdict\\\":\\\"WA\\\",\\\"failed_index\\\":{idx}}}"); return; }}'
+        )
+
+    statements.append('System.out.println("__RESULT__{\\"verdict\\":\\"AC\\"}");')
+
+    statements_block = textwrap.indent("\n".join(statements), "            ")
+
+    return f"""
+import java.util.*;
+
+public class Runner {{
+{helper_methods}
+    public static void main(String[] args) {{
+        Solution solution = new Solution();
+        try {{
+            {statements_block}
+        }} catch (Throwable t) {{
+            System.out.println("__RESULT__{{\\"verdict\\":\\"RE\\"}}");
+        }}
+    }}
+}}
+"""
+
+
+def run_java_submission(code, method_name, return_type, param_types, testcases, time_limit_sec=5):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        solution_path = os.path.join(temp_dir, 'Solution.java')
+        runner_path = os.path.join(temp_dir, 'Runner.java')
+
+        if 'class Solution' not in code:
+            code = f'public class Solution {{\n{code}\n}}'
+
+        with open(solution_path, 'w', encoding='utf-8') as handle:
+            handle.write(code)
+
+        runner_code = build_java_runner(method_name, return_type, param_types, testcases)
+        with open(runner_path, 'w', encoding='utf-8') as handle:
+            handle.write(textwrap.dedent(runner_code))
+
+        compile_result = subprocess.run(
+            ['javac', solution_path, runner_path],
+            capture_output=True,
+            text=True
+        )
+        if compile_result.returncode != 0:
+            return {'verdict': 'CE', 'runtime_ms': 0}
+
+        start = time.monotonic()
+        try:
+            run_result = subprocess.run(
+                ['java', '-cp', temp_dir, 'Runner'],
+                capture_output=True,
+                text=True,
+                timeout=time_limit_sec
+            )
+        except subprocess.TimeoutExpired:
+            return {'verdict': 'TLE', 'runtime_ms': int(time_limit_sec * 1000)}
+
+        runtime_ms = int((time.monotonic() - start) * 1000)
+        if run_result.returncode != 0:
+            return {'verdict': 'RE', 'runtime_ms': runtime_ms}
+
+        verdict_payload = None
+        for line in run_result.stdout.splitlines():
+            if line.startswith('__RESULT__'):
+                payload_raw = line.replace('__RESULT__', '', 1)
+                try:
+                    verdict_payload = json.loads(payload_raw)
+                except json.JSONDecodeError:
+                    verdict_payload = None
+
+        if not verdict_payload:
+            return {'verdict': 'RE', 'runtime_ms': runtime_ms}
+
+        verdict_payload.setdefault('runtime_ms', runtime_ms)
+        return verdict_payload
+
+
+def parse_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def compute_contest_score(base_points, elapsed_seconds, start_time, end_time):
+    duration = max(1, int((end_time - start_time).total_seconds()))
+    penalty_per_second = float(base_points) / float(duration)
+    score = float(base_points) - (penalty_per_second * float(elapsed_seconds))
+    if score < 0:
+        return 0.0
+    return round(score, 3)
 
 # ================== AUTH ENDPOINTS ==================
 
@@ -1486,6 +1825,465 @@ def leave_group(group_id):
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+# ================== CONTESTS ==================
+
+@app.route('/api/groups/<int:group_id>/contests', methods=['GET'])
+def list_group_contests(group_id):
+    try:
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'user_id required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        membership = get_group_membership(cursor, group_id, user_id)
+        if not membership:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'User is not a member of this group'}), 403
+
+        cursor.execute(
+            '''SELECT id, name, description, start_time, end_time, max_submissions_per_problem, created_by, created_at
+               FROM contests
+               WHERE group_id = %s
+               ORDER BY start_time DESC''',
+            (group_id,)
+        )
+        contests = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'contests': contests,
+            'role': membership['role']
+        }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/groups/<int:group_id>/contests', methods=['POST'])
+def create_contest(group_id):
+    try:
+        data = request.json or {}
+        user_id = data.get('user_id')
+        name = data.get('name')
+        description = data.get('description', '')
+        start_time_raw = data.get('start_time')
+        end_time_raw = data.get('end_time')
+        problems = data.get('problems', [])
+        max_submissions = data.get('max_submissions_per_problem', 3)
+
+        if not user_id or not name or not start_time_raw or not end_time_raw:
+            return jsonify({'error': 'user_id, name, start_time, end_time required'}), 400
+
+        start_time = parse_datetime(start_time_raw)
+        end_time = parse_datetime(end_time_raw)
+        if not start_time or not end_time or end_time <= start_time:
+            return jsonify({'error': 'Invalid contest time range'}), 400
+
+        if not isinstance(problems, list) or len(problems) == 0:
+            return jsonify({'error': 'At least one problem is required'}), 400
+        if len(problems) > 5:
+            return jsonify({'error': 'Maximum 5 problems allowed'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        membership = get_group_membership(cursor, group_id, user_id)
+        if not membership or membership['role'] != 'admin':
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Only group admins can create contests'}), 403
+
+        cursor.execute(
+            '''INSERT INTO contests
+               (group_id, name, description, created_by, start_time, end_time, max_submissions_per_problem)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)''',
+            (group_id, name, description, user_id, start_time, end_time, int(max_submissions))
+        )
+        conn.commit()
+        contest_id = cursor.lastrowid
+
+        for order_index, problem in enumerate(problems):
+            title = problem.get('title')
+            difficulty = problem.get('difficulty')
+            prompt = problem.get('prompt')
+            function_signature = problem.get('function_signature')
+            leetcode_number = problem.get('leetcode_number')
+            base_points = problem.get('base_points')
+            testcases = problem.get('testcases', [])
+
+            if not title or not difficulty or not prompt or not function_signature:
+                cursor.close()
+                conn.close()
+                return jsonify({'error': 'Each problem needs title, difficulty, prompt, function_signature'}), 400
+
+            if difficulty not in ('Easy', 'Medium', 'Hard'):
+                cursor.close()
+                conn.close()
+                return jsonify({'error': 'Invalid difficulty'}), 400
+
+            if base_points is None:
+                base_points = {'Easy': 100, 'Medium': 250, 'Hard': 500}.get(difficulty, 100)
+
+            if not isinstance(testcases, list) or len(testcases) == 0:
+                cursor.close()
+                conn.close()
+                return jsonify({'error': 'Each problem needs at least one testcase'}), 400
+
+            cursor.execute(
+                '''INSERT INTO contest_problems
+                   (contest_id, leetcode_number, title, difficulty, prompt, function_signature, base_points, order_index)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''',
+                (contest_id, leetcode_number, title, difficulty, prompt, function_signature, base_points, order_index)
+            )
+            conn.commit()
+            contest_problem_id = cursor.lastrowid
+
+            for testcase in testcases:
+                input_value = testcase.get('input')
+                expected_value = testcase.get('expected')
+                is_sample = bool(testcase.get('is_sample', False))
+
+                cursor.execute(
+                    '''INSERT INTO contest_testcases
+                       (contest_problem_id, input_json, expected_output_json, is_sample)
+                       VALUES (%s, %s, %s, %s)''',
+                    (
+                        contest_problem_id,
+                        json.dumps(input_value, ensure_ascii=True),
+                        json.dumps(expected_value, ensure_ascii=True),
+                        is_sample
+                    )
+                )
+
+            conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({'success': True, 'contest_id': contest_id}), 201
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/contests/<int:contest_id>', methods=['GET'])
+def get_contest_details(contest_id):
+    try:
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'user_id required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            '''SELECT id, group_id, name, description, start_time, end_time,
+                      max_submissions_per_problem, created_by
+               FROM contests
+               WHERE id = %s''',
+            (contest_id,)
+        )
+        contest = cursor.fetchone()
+        if not contest:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Contest not found'}), 404
+
+        membership = get_group_membership(cursor, contest['group_id'], user_id)
+        if not membership:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'User is not a member of this group'}), 403
+
+        cursor.execute(
+            '''SELECT id, leetcode_number, title, difficulty, prompt, function_signature, base_points, order_index
+               FROM contest_problems
+               WHERE contest_id = %s
+               ORDER BY order_index ASC''',
+            (contest_id,)
+        )
+        problems = cursor.fetchall()
+
+        problem_ids = [problem['id'] for problem in problems]
+        testcases_by_problem = {problem_id: [] for problem_id in problem_ids}
+        if problem_ids:
+            format_ids = ','.join(['%s'] * len(problem_ids))
+            cursor.execute(
+                f'''SELECT contest_problem_id, input_json, expected_output_json, is_sample
+                    FROM contest_testcases
+                    WHERE contest_problem_id IN ({format_ids})''',
+                tuple(problem_ids)
+            )
+            for row in cursor.fetchall():
+                testcase = {
+                    'input': json.loads(row['input_json']),
+                    'is_sample': bool(row['is_sample'])
+                }
+                if membership['role'] == 'admin':
+                    testcase['expected'] = json.loads(row['expected_output_json'])
+                testcases_by_problem[row['contest_problem_id']].append(testcase)
+
+        cursor.execute(
+            '''SELECT contest_problem_id, COUNT(*) as count
+               FROM contest_submissions
+               WHERE contest_id = %s AND user_id = %s
+               GROUP BY contest_problem_id''',
+            (contest_id, user_id)
+        )
+        submission_counts = {row['contest_problem_id']: row['count'] for row in cursor.fetchall()}
+
+        for problem in problems:
+            problem['testcases'] = testcases_by_problem.get(problem['id'], [])
+            problem['attempts_used'] = submission_counts.get(problem['id'], 0)
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'contest': contest,
+            'problems': problems,
+            'role': membership['role']
+        }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/contests/<int:contest_id>/submit', methods=['POST'])
+def submit_contest_solution(contest_id):
+    try:
+        data = request.json or {}
+        user_id = data.get('user_id')
+        contest_problem_id = data.get('contest_problem_id')
+        language = (data.get('language') or '').lower()
+        code = data.get('code') or ''
+
+        if not user_id or not contest_problem_id or not language or not code.strip():
+            return jsonify({'error': 'user_id, contest_problem_id, language, code required'}), 400
+
+        if language not in ('python', 'java'):
+            return jsonify({'error': 'Unsupported language'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            '''SELECT id, group_id, start_time, end_time, max_submissions_per_problem
+               FROM contests
+               WHERE id = %s''',
+            (contest_id,)
+        )
+        contest = cursor.fetchone()
+        if not contest:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Contest not found'}), 404
+
+        membership = get_group_membership(cursor, contest['group_id'], user_id)
+        if not membership:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'User is not a member of this group'}), 403
+
+        now = datetime.now()
+        if now < contest['start_time'] or now > contest['end_time']:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Contest is not active'}), 400
+
+        cursor.execute(
+            '''SELECT id, contest_id, difficulty, function_signature, base_points
+               FROM contest_problems
+               WHERE id = %s''',
+            (contest_problem_id,)
+        )
+        problem = cursor.fetchone()
+        if not problem or problem['contest_id'] != contest_id:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Invalid contest problem'}), 400
+
+        cursor.execute(
+            '''SELECT COUNT(*) as count
+               FROM contest_submissions
+               WHERE contest_id = %s AND contest_problem_id = %s AND user_id = %s''',
+            (contest_id, contest_problem_id, user_id)
+        )
+        used_attempts = cursor.fetchone()['count']
+        if used_attempts >= contest['max_submissions_per_problem']:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Submission limit reached'}), 400
+
+        cursor.execute(
+            '''SELECT input_json, expected_output_json
+               FROM contest_testcases
+               WHERE contest_problem_id = %s
+               ORDER BY id ASC''',
+            (contest_problem_id,)
+        )
+        testcases = []
+        for row in cursor.fetchall():
+            testcases.append({
+                'input': json.loads(row['input_json']),
+                'expected': json.loads(row['expected_output_json'])
+            })
+
+        if language == 'python':
+            function_name = parse_python_function_name(problem['function_signature'])
+            verdict_payload = run_python_submission(code, function_name, testcases)
+        else:
+            method_name, return_type, param_types = parse_java_signature(problem['function_signature'])
+            if not validate_java_type(return_type) or any(not validate_java_type(t) for t in param_types):
+                cursor.close()
+                conn.close()
+                return jsonify({'error': 'Unsupported Java types in signature'}), 400
+            verdict_payload = run_java_submission(code, method_name, return_type, param_types, testcases)
+
+        verdict = verdict_payload.get('verdict', 'RE')
+        runtime_ms = verdict_payload.get('runtime_ms')
+
+        elapsed_seconds = int((now - contest['start_time']).total_seconds())
+        if elapsed_seconds < 0:
+            elapsed_seconds = 0
+
+        score_awarded = 0.0
+        if verdict == 'AC':
+            score_awarded = compute_contest_score(
+                problem['base_points'],
+                elapsed_seconds,
+                contest['start_time'],
+                contest['end_time']
+            )
+
+        cursor.execute(
+            '''INSERT INTO contest_submissions
+               (contest_id, contest_problem_id, user_id, language, code, verdict, runtime_ms, elapsed_seconds, score_awarded)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+            (
+                contest_id,
+                contest_problem_id,
+                user_id,
+                language,
+                code,
+                verdict,
+                runtime_ms,
+                elapsed_seconds,
+                score_awarded
+            )
+        )
+        conn.commit()
+
+        cursor.execute(
+            '''INSERT IGNORE INTO contest_participants (contest_id, user_id)
+               VALUES (%s, %s)''',
+            (contest_id, user_id)
+        )
+        conn.commit()
+
+        attempts_used = used_attempts + 1
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'verdict': verdict,
+            'runtime_ms': runtime_ms,
+            'score_awarded': score_awarded,
+            'attempts_used': attempts_used,
+            'attempts_left': max(0, contest['max_submissions_per_problem'] - attempts_used)
+        }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/contests/<int:contest_id>/leaderboard', methods=['GET'])
+def contest_leaderboard(contest_id):
+    try:
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'user_id required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            'SELECT group_id FROM contests WHERE id = %s',
+            (contest_id,)
+        )
+        contest = cursor.fetchone()
+        if not contest:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Contest not found'}), 404
+
+        membership = get_group_membership(cursor, contest['group_id'], user_id)
+        if not membership:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'User is not a member of this group'}), 403
+
+        cursor.execute(
+            '''SELECT s.user_id, u.name, s.contest_problem_id, s.score_awarded, s.elapsed_seconds
+               FROM contest_submissions s
+               JOIN users u ON u.id = s.user_id
+               WHERE s.contest_id = %s AND s.verdict = 'AC' ''',
+            (contest_id,)
+        )
+        submissions = cursor.fetchall()
+
+        leaderboard = {}
+        for row in submissions:
+            user_key = row['user_id']
+            user_entry = leaderboard.setdefault(user_key, {
+                'user_id': row['user_id'],
+                'name': row['name'],
+                'total_score': 0.0,
+                'total_time': 0
+            })
+
+            problem_key = row['contest_problem_id']
+            problem_scores = user_entry.setdefault('problem_scores', {})
+            existing = problem_scores.get(problem_key)
+            score = float(row['score_awarded'] or 0)
+            elapsed = int(row['elapsed_seconds'] or 0)
+
+            if not existing or score > existing['score'] or (score == existing['score'] and elapsed < existing['elapsed']):
+                problem_scores[problem_key] = {
+                    'score': score,
+                    'elapsed': elapsed
+                }
+
+        results = []
+        for entry in leaderboard.values():
+            total_score = 0.0
+            total_time = 0
+            for problem_data in entry.get('problem_scores', {}).values():
+                total_score += problem_data['score']
+                total_time += problem_data['elapsed']
+            results.append({
+                'user_id': entry['user_id'],
+                'name': entry['name'],
+                'total_score': round(total_score, 3),
+                'total_time': total_time
+            })
+
+        results.sort(key=lambda row: (-row['total_score'], row['total_time']))
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({'leaderboard': results}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # ================== HEALTH CHECK ==================
 
