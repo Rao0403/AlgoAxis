@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
+import Link from 'next/link';
 import Navbar from '../../../../../components/Navbar';
 import axios from 'axios';
 import { getApiUrl } from '../../../../../utils/api';
@@ -222,7 +223,11 @@ export default function ContestDetails() {
                       {leaderboard.map((entry, index) => (
                         <tr key={entry.user_id}>
                           <td>#{index + 1}</td>
-                          <td>{entry.name}</td>
+                          <td>
+                            <Link className="profile-link" href={`/users/${entry.user_id}`}>
+                              {entry.name}
+                            </Link>
+                          </td>
                           <td>{entry.total_score}</td>
                           <td>{entry.total_time}</td>
                         </tr>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
+import Link from 'next/link';
 import Navbar from '../components/Navbar';
 import axios from 'axios';
 import { getApiUrl } from '../utils/api';
@@ -281,9 +282,17 @@ export default function Home() {
                     </thead>
                     <tbody>
                       {leaderboard.slice(0, 5).map((user, index) => (
-                        <tr key={`${user.email || user.name || 'user'}-${index}`}>
+                        <tr key={user.user_id || `${user.email || user.name || 'user'}-${index}`}>
                           <td><strong>#{index + 1}</strong></td>
-                          <td><strong>{user.name}</strong></td>
+                          <td>
+                            {user.user_id ? (
+                              <Link className="profile-link" href={`/users/${user.user_id}`}>
+                                {user.name}
+                              </Link>
+                            ) : (
+                              <span className="profile-link">{user.name}</span>
+                            )}
+                          </td>
                           <td>{user.total_problems || 0}</td>
                           <td><strong>{user.total_points || 0}</strong></td>
                         </tr>
@@ -321,6 +330,5 @@ export default function Home() {
     </div>
   );
 }
-
 
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
+import Link from 'next/link';
 import Navbar from '../../components/Navbar';
 import axios from 'axios';
 import { getApiUrl } from '../../utils/api';
@@ -222,7 +223,11 @@ export default function GroupDetails() {
                         <tbody>
                           {members.map((member) => (
                             <tr key={`${member.user_id}-${member.joined_at}`}>
-                              <td>{member.name || `User ${member.user_id}`}</td>
+                              <td>
+                                <Link className="profile-link" href={`/users/${member.user_id}`}>
+                                  {member.name || `User ${member.user_id}`}
+                                </Link>
+                              </td>
                               <td>{formatRole(member.role)}</td>
                               <td>
                                 {member.joined_at

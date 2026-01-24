@@ -8,6 +8,11 @@ CREATE TABLE IF NOT EXISTS users (
     name VARCHAR(100) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     password VARCHAR(255) NOT NULL,
+    age INT DEFAULT NULL,
+    college VARCHAR(150) DEFAULT NULL,
+    major VARCHAR(100) DEFAULT NULL,
+    graduation_year INT DEFAULT NULL,
+    bio TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_email (email)
 );

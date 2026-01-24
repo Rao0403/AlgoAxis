@@ -63,6 +63,22 @@ def user_exists(cursor, user_id):
     return cursor.fetchone() is not None
 
 
+def get_user_profile(cursor, user_id, include_email=False):
+    fields = [
+        'id', 'name', 'age', 'college', 'major', 'graduation_year', 'bio', 'created_at'
+    ]
+    if include_email:
+        fields.insert(2, 'email')
+
+    cursor.execute(
+        f'''SELECT {", ".join(fields)}
+            FROM users
+            WHERE id = %s''',
+        (user_id,)
+    )
+    return cursor.fetchone()
+
+
 def get_group_membership(cursor, group_id, user_id):
     cursor.execute(
         'SELECT role FROM group_members WHERE group_id = %s AND user_id = %s',
@@ -1467,7 +1483,8 @@ def get_leaderboard():
         cursor = conn.cursor()
 
         cursor.execute(
-            '''SELECT u.name, u.email, SUM(p.points) as total_points, COUNT(p.id) as total_problems
+            '''SELECT u.id as user_id, u.name, u.email,
+                      SUM(p.points) as total_points, COUNT(p.id) as total_problems
                FROM users u
                LEFT JOIN problems p ON u.id = p.user_id
                GROUP BY u.id
@@ -1860,6 +1877,145 @@ def list_group_contests(group_id):
             'contests': contests,
             'role': membership['role']
         }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ================== USER PROFILE ==================
+
+@app.route('/api/users/me', methods=['GET'])
+def get_my_profile():
+    try:
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'user_id required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        profile = get_user_profile(cursor, user_id, include_email=True)
+        cursor.close()
+        conn.close()
+
+        if not profile:
+            return jsonify({'error': 'User not found'}), 404
+
+        return jsonify({'profile': profile}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/users/<int:profile_user_id>', methods=['GET'])
+def get_public_profile(profile_user_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        profile = get_user_profile(cursor, profile_user_id, include_email=False)
+        cursor.close()
+        conn.close()
+
+        if not profile:
+            return jsonify({'error': 'User not found'}), 404
+
+        return jsonify({'profile': profile}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/users/me', methods=['PUT'])
+def update_my_profile():
+    try:
+        data = request.json or {}
+        user_id = data.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'user_id required'}), 400
+
+        fields = {}
+        for key in ['name', 'age', 'college', 'major', 'graduation_year', 'bio']:
+            if key in data:
+                fields[key] = data.get(key)
+
+        if not fields:
+            return jsonify({'error': 'No fields to update'}), 400
+
+        if 'age' in fields and fields['age'] is not None:
+            try:
+                fields['age'] = int(fields['age'])
+            except (TypeError, ValueError):
+                return jsonify({'error': 'age must be a number'}), 400
+
+        if 'graduation_year' in fields and fields['graduation_year'] is not None:
+            try:
+                fields['graduation_year'] = int(fields['graduation_year'])
+            except (TypeError, ValueError):
+                return jsonify({'error': 'graduation_year must be a number'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if not user_exists(cursor, user_id):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+
+        update_parts = []
+        values = []
+        for key, value in fields.items():
+            update_parts.append(f'{key} = %s')
+            values.append(value)
+        values.append(user_id)
+
+        query = f'UPDATE users SET {", ".join(update_parts)} WHERE id = %s'
+        cursor.execute(query, tuple(values))
+        conn.commit()
+
+        profile = get_user_profile(cursor, user_id, include_email=True)
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({'profile': profile}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/users/me/password', methods=['POST'])
+def update_my_password():
+    try:
+        data = request.json or {}
+        user_id = data.get('user_id')
+        current_password = data.get('current_password')
+        new_password = data.get('new_password')
+
+        if not user_id or not current_password or not new_password:
+            return jsonify({'error': 'user_id, current_password, new_password required'}), 400
+
+        if len(new_password) < 6:
+            return jsonify({'error': 'Password must be at least 6 characters'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT password FROM users WHERE id = %s', (user_id,))
+        user = cursor.fetchone()
+
+        if not user or not check_password_hash(user['password'], current_password):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Current password is incorrect'}), 400
+
+        hashed_password = generate_password_hash(new_password)
+        cursor.execute('UPDATE users SET password = %s WHERE id = %s', (hashed_password, user_id))
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({'message': 'Password updated'}), 200
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
