@@ -74,10 +74,10 @@ export default function Navbar() {
                   <Link href="/groups" className="nav-link">Groups</Link>
                 </li>
                 <li className="nav-item">
-                  <Link href="/profile" className="nav-link">Profile</Link>
+                  <Link href="/solver" className="nav-link">AI Solver</Link>
                 </li>
                 <li className="nav-item">
-                  <Link href="/solver" className="nav-link">AI Solver</Link>
+                  <Link href="/profile" className="nav-link">Profile</Link>
                 </li>
                 <li className="nav-item">
                   <button 
