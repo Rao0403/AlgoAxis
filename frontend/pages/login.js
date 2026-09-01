@@ -45,7 +45,7 @@ export default function Login() {
             <div className="brand-badge">AlgoAxis</div>
             <h1 className="hero-text">Master the <span className="text-gradient">Algorithm.</span></h1>
             <p className="hero-subtext">
-              Join thousands of developers sharpening their skills for the world's top tech companies.
+              Join thousands of developers sharpening their skills for the world&apos;s top tech companies.
             </p>
 
             <div className="features-list">
@@ -60,7 +60,7 @@ export default function Login() {
                 <div className="feature-icon"><FaRobot /></div>
                 <div>
                   <h4>AI Guidance</h4>
-                  <p>Get real-time hints when you're stuck on a problem.</p>
+                  <p>Get real-time hints when you&apos;re stuck on a problem.</p>
                 </div>
               </div>
               <div className="feature-item">

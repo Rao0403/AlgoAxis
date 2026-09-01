@@ -12,11 +12,12 @@ LeetCode is the content source. AlgoAxis is the training and discipline layer bu
 
 ## Core Features (v1)
 - Problem Tracker with Notes
-  - Track solved problems with difficulty, topic, points, summary, and notes. (Implemented)
-  - Statuses: To-Do, In Progress, Solved, Revisit. (Planned)
-  - Search, filter, and sort. (Planned)
+  - Track problems with difficulty, topic, points, status, summary, and quick notes. (Implemented)
+  - Statuses: To-Do, In Progress, Solved, Revisit. (Implemented)
+  - Search, filter, and sort. (Implemented)
+  - Structured review notes with approach, code, complexity, insights, mistakes, and related problems. (Implemented)
 - LeetCode Profile Sync (Browser Extension)
-  - One-time username setup, pulls problem metadata from public profiles. (Planned)
+  - One-time username setup, pulls problem metadata from public profiles. (Implemented)
   - Periodic sync to reduce manual tracking. (Planned)
 - Dashboard and Leaderboards
   - Problems solved and points summary, difficulty and topic distribution, and points over time. (Implemented)
@@ -30,11 +31,12 @@ LeetCode is the content source. AlgoAxis is the training and discipline layer bu
   - Create or join up to 2 groups, with invite codes and member lists. (Implemented)
   - Internal leaderboards and shared progress. (Planned)
 - Private Programming Contests
-  - Group admins create time-bound contests with 3 to 5 problems. (Planned)
-  - Scoring based on difficulty, time, and penalties. (Planned)
-  - Group-specific contest leaderboards. (Planned)
+  - Group admins create time-bound contests with custom problems. (Implemented)
+  - Scoring based on difficulty and elapsed contest time. (Implemented)
+  - Group-specific contest leaderboards. (Implemented)
 - Code Execution (v1)
-  - In-browser editor, run code against test cases, verdicts, submission tracking. (Planned)
+  - Python and Java submissions are run against contest test cases. (Implemented)
+  - Strong container isolation for untrusted code execution. (Planned)
 
 ## Other Implemented Modules
 - AI problem recommendations based on a user's solved history.
@@ -58,6 +60,7 @@ High level flow:
 - `backend/` - Flask API, database schema, and Python dependencies
   - `backend/app.py` - API routes and core services
   - `backend/db_setup.sql` - MySQL schema
+  - `backend/migrations/` - Manual SQL migrations for existing databases
   - `backend/requirements.txt` - Python dependencies
   - `backend/.env` - Local dev environment variables (do not commit real secrets)
 - `frontend/` - Next.js app
@@ -101,6 +104,11 @@ npm run dev
 mysql -u <user> -p < backend/db_setup.sql
 ```
 
+For an existing local database created before tracker statuses and structured notes, run:
+```bash
+mysql -u <user> -p < backend/migrations/001_tracker_status_and_notes.sql
+```
+
 2) Install dependencies:
 ```bash
 cd backend
@@ -124,6 +132,8 @@ Defined in `backend/app.py`:
 - `AWS_REGION`
 - `S3_BUCKET_NAME`
 - `GEMINI_API_KEY`
+- `MAX_RESUME_UPLOAD_MB` (optional, defaults to 5)
+- `ENABLE_DEBUG_DB` (optional, set to `true` only for temporary backend DB debugging)
 
 ## Deployment
 
@@ -146,16 +156,18 @@ npm run start
 - Passwords are hashed using Werkzeug.
 - The frontend stores `user_id` (and optionally name/email) in `localStorage` and gates routes client-side.
 - No token-based auth, refresh tokens, or server-side sessions are implemented yet. (Planned)
+- Problem update/delete and structured notes routes verify that the submitted `user_id` owns the problem.
 - Rate limiting is not implemented. (Planned)
 
 ## Payments (Stripe)
 - Not implemented. (Planned)
 
 ## Roadmap / Next Steps
-- UI polish and consistency improvements
-- Contest system with judging and leaderboards
+- Token-based auth or HTTP-only sessions with authorization middleware
+- Containerized or managed sandbox for contest code execution
+- UI polish and consistency improvements across dashboard, resume, groups, and contests
 - Deeper analytics (streaks, cohort tracking, topic mastery)
-- Auth hardening (sessions or JWT, server-side checks, rate limiting)
+- Rate limiting, audit logging, and production monitoring
 - Performance and scaling improvements
 
 ## License

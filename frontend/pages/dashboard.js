@@ -12,7 +12,12 @@ ChartJS.register(ArcElement, CategoryScale, LinearScale, BarElement, PointElemen
 export default function Dashboard() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [summary, setSummary] = useState({ total_problems: 0, total_points: 0 });
+  const [summary, setSummary] = useState({
+    total_problems: 0,
+    total_points: 0,
+    tracked_problems: 0,
+    in_progress_problems: 0
+  });
   const [difficultyData, setDifficultyData] = useState(null);
   const [topicData, setTopicData] = useState(null);
   const [pointsData, setPointsData] = useState(null);
@@ -125,7 +130,14 @@ export default function Dashboard() {
           <>
             {/* Summary Cards */}
             <div className="row g-4 mb-5">
-              <div className="col-md-6 fade-in-up">
+              <div className="col-md-6 col-xl-3 fade-in-up">
+                <div className="feature-card h-100">
+                  <h2 className="metric-value">{summary.tracked_problems || summary.total_problems}</h2>
+                  <p className="card-text" style={{ margin: 0 }}>Tracked Problems</p>
+                </div>
+              </div>
+
+              <div className="col-md-6 col-xl-3 fade-in-up" style={{ animationDelay: '0.1s' }}>
                 <div className="feature-card">
                   <div className="d-flex align-items-center">
                     <div style={{ 
@@ -141,13 +153,20 @@ export default function Dashboard() {
                       <h2 style={{ fontSize: '2.5rem', fontWeight: 'bold', color: '#2d3748', margin: 0 }}>
                         {summary.total_problems}
                       </h2>
-                      <p className="card-text" style={{ margin: 0 }}>Total Problems Solved</p>
+                      <p className="card-text" style={{ margin: 0 }}>Problems Solved</p>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div className="col-md-6 fade-in-up" style={{ animationDelay: '0.1s' }}>
+              <div className="col-md-6 col-xl-3 fade-in-up" style={{ animationDelay: '0.2s' }}>
+                <div className="feature-card h-100">
+                  <h2 className="metric-value">{summary.in_progress_problems || 0}</h2>
+                  <p className="card-text" style={{ margin: 0 }}>In Progress</p>
+                </div>
+              </div>
+
+              <div className="col-md-6 col-xl-3 fade-in-up" style={{ animationDelay: '0.3s' }}>
                 <div className="feature-card">
                   <div className="d-flex align-items-center">
                     <div style={{ 

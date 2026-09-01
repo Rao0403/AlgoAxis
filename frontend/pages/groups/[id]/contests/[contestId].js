@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
-import Navbar from '../../../../../components/Navbar';
+import Navbar from '../../../../components/Navbar';
 import axios from 'axios';
-import { getApiUrl } from '../../../../../utils/api';
+import { getApiUrl } from '../../../../utils/api';
 
 export default function ContestDetails() {
   const router = useRouter();

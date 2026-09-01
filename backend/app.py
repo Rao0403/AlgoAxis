@@ -6,6 +6,7 @@ from botocore.exceptions import ClientError
 import os
 from dotenv import load_dotenv
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.exceptions import RequestEntityTooLarge
 from datetime import datetime
 import uuid
 import google.generativeai as genai
@@ -27,6 +28,19 @@ app = Flask(__name__)
 CORS(app)
 
 # ================== CONFIG ==================
+
+MAX_RESUME_UPLOAD_MB = int(os.getenv('MAX_RESUME_UPLOAD_MB', 5))
+MAX_RESUME_UPLOAD_BYTES = MAX_RESUME_UPLOAD_MB * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = MAX_RESUME_UPLOAD_BYTES
+
+POINTS_BY_DIFFICULTY = {
+    'Easy': 10,
+    'Medium': 25,
+    'Hard': 50
+}
+
+PROBLEM_STATUSES = ('To-Do', 'In Progress', 'Solved', 'Revisit')
+POINT_AWARD_STATUSES = ('Solved', 'Revisit')
 
 DB_CONFIG = {
     'host': os.getenv('DB_HOST'),
@@ -91,6 +105,47 @@ def get_user_group_count(cursor, user_id):
     cursor.execute('SELECT COUNT(*) as count FROM group_members WHERE user_id = %s', (user_id,))
     result = cursor.fetchone()
     return result['count'] if result else 0
+
+
+def normalize_problem_status(value, default='Solved'):
+    if value is None or str(value).strip() == '':
+        return default
+
+    cleaned = str(value).strip()
+    aliases = {
+        'todo': 'To-Do',
+        'to-do': 'To-Do',
+        'to do': 'To-Do',
+        'inprogress': 'In Progress',
+        'in-progress': 'In Progress',
+        'in progress': 'In Progress',
+        'solved': 'Solved',
+        'done': 'Solved',
+        'complete': 'Solved',
+        'completed': 'Solved',
+        'revisit': 'Revisit',
+        'review': 'Revisit'
+    }
+    return aliases.get(cleaned.lower(), cleaned)
+
+
+def calculate_problem_points(difficulty, status='Solved'):
+    if status not in POINT_AWARD_STATUSES:
+        return 0
+    return POINTS_BY_DIFFICULTY.get(difficulty, 10)
+
+
+def problem_belongs_to_user(cursor, problem_id, user_id):
+    cursor.execute(
+        'SELECT id, difficulty, status FROM problems WHERE id = %s AND user_id = %s',
+        (problem_id, user_id)
+    )
+    return cursor.fetchone()
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_file_too_large(_error):
+    return jsonify({'error': f'File size must be {MAX_RESUME_UPLOAD_MB}MB or less'}), 413
 
 
 def generate_invite_code(cursor, length=12, max_attempts=5):
@@ -660,12 +715,63 @@ def get_problems():
         if not user_id:
             return jsonify({'error': 'user_id required'}), 400
 
+        status = request.args.get('status')
+        difficulty = request.args.get('difficulty')
+        topic = request.args.get('topic')
+        search = (request.args.get('search') or '').strip()
+        sort_by = request.args.get('sort_by', 'created_at')
+        sort_dir = request.args.get('sort_dir', 'desc').lower()
+
+        if status and status != 'All':
+            status = normalize_problem_status(status)
+            if status not in PROBLEM_STATUSES:
+                return jsonify({'error': 'Invalid problem status'}), 400
+
+        if difficulty and difficulty != 'All' and difficulty not in POINTS_BY_DIFFICULTY:
+            return jsonify({'error': 'Invalid difficulty'}), 400
+
         conn = get_db_connection()
         cursor = conn.cursor()
 
+        conditions = ['user_id = %s']
+        values = [user_id]
+
+        if status and status != 'All':
+            conditions.append('status = %s')
+            values.append(status)
+
+        if difficulty and difficulty != 'All':
+            conditions.append('difficulty = %s')
+            values.append(difficulty)
+
+        if topic and topic != 'All':
+            conditions.append('topic = %s')
+            values.append(topic)
+
+        if search:
+            conditions.append('(number LIKE %s OR name LIKE %s OR topic LIKE %s OR summary LIKE %s)')
+            search_term = f'%{search}%'
+            values.extend([search_term, search_term, search_term, search_term])
+
+        sort_columns = {
+            'created_at': 'created_at',
+            'updated_at': 'updated_at',
+            'number': 'number',
+            'name': 'name',
+            'difficulty': 'difficulty',
+            'topic': 'topic',
+            'status': 'status',
+            'points': 'points'
+        }
+        order_column = sort_columns.get(sort_by, 'created_at')
+        order_direction = 'ASC' if sort_dir == 'asc' else 'DESC'
+
         cursor.execute(
-            'SELECT * FROM problems WHERE user_id = %s ORDER BY created_at DESC',
-            (user_id,)
+            f'''SELECT *
+                FROM problems
+                WHERE {' AND '.join(conditions)}
+                ORDER BY {order_column} {order_direction}''',
+            tuple(values)
         )
         problems = cursor.fetchall()
 
@@ -681,28 +787,39 @@ def get_problems():
 @app.route('/api/problems', methods=['POST'])
 def add_problem():
     try:
-        data = request.json
+        data = request.json or {}
         user_id = data.get('user_id')
         number = data.get('number')
         name = data.get('name')
         difficulty = data.get('difficulty')
         topic = data.get('topic')
+        status = normalize_problem_status(data.get('status'), default='Solved')
         summary = data.get('summary', '')
         notes = data.get('notes', '')
 
         if not all([user_id, number, name, difficulty, topic]):
             return jsonify({'error': 'All fields except summary and notes are required'}), 400
 
-        # Points based on difficulty
-        points = {'Easy': 10, 'Medium': 25, 'Hard': 50}.get(difficulty, 10)
+        if difficulty not in POINTS_BY_DIFFICULTY:
+            return jsonify({'error': 'Invalid difficulty'}), 400
+
+        if status not in PROBLEM_STATUSES:
+            return jsonify({'error': 'Invalid problem status'}), 400
+
+        points = calculate_problem_points(difficulty, status)
 
         conn = get_db_connection()
         cursor = conn.cursor()
 
+        if not user_exists(cursor, user_id):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+
         cursor.execute(
-            '''INSERT INTO problems (user_id, number, name, difficulty, topic, summary, notes, points)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''',
-            (user_id, number, name, difficulty, topic, summary, notes, points)
+            '''INSERT INTO problems (user_id, number, name, difficulty, topic, status, summary, notes, points)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+            (user_id, number, name, difficulty, topic, status, summary, notes, points)
         )
         conn.commit()
         problem_id = cursor.lastrowid
@@ -722,13 +839,25 @@ def add_problem():
 @app.route('/api/problems/<int:problem_id>', methods=['PUT'])
 def update_problem(problem_id):
     try:
-        data = request.json
+        data = request.json or {}
+        user_id = data.get('user_id') or request.args.get('user_id')
+
+        if not user_id:
+            return jsonify({'error': 'user_id required'}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor()
 
+        existing_problem = problem_belongs_to_user(cursor, problem_id, user_id)
+        if not existing_problem:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Problem not found'}), 404
+
         update_fields = []
         values = []
+        difficulty_for_points = existing_problem['difficulty']
+        status_for_points = existing_problem.get('status') or 'Solved'
 
         if 'number' in data:
             update_fields.append('number = %s')
@@ -737,12 +866,24 @@ def update_problem(problem_id):
             update_fields.append('name = %s')
             values.append(data['name'])
         if 'difficulty' in data:
+            if data['difficulty'] not in POINTS_BY_DIFFICULTY:
+                cursor.close()
+                conn.close()
+                return jsonify({'error': 'Invalid difficulty'}), 400
+
             update_fields.append('difficulty = %s')
             values.append(data['difficulty'])
-            # Update points based on new difficulty
-            points = {'Easy': 10, 'Medium': 25, 'Hard': 50}.get(data['difficulty'], 10)
-            update_fields.append('points = %s')
-            values.append(points)
+            difficulty_for_points = data['difficulty']
+        if 'status' in data:
+            status = normalize_problem_status(data['status'])
+            if status not in PROBLEM_STATUSES:
+                cursor.close()
+                conn.close()
+                return jsonify({'error': 'Invalid problem status'}), 400
+
+            update_fields.append('status = %s')
+            values.append(status)
+            status_for_points = status
         if 'topic' in data:
             update_fields.append('topic = %s')
             values.append(data['topic'])
@@ -753,11 +894,18 @@ def update_problem(problem_id):
             update_fields.append('notes = %s')
             values.append(data['notes'])
 
+        if 'difficulty' in data or 'status' in data:
+            update_fields.append('points = %s')
+            values.append(calculate_problem_points(difficulty_for_points, status_for_points))
+
         if not update_fields:
+            cursor.close()
+            conn.close()
             return jsonify({'error': 'No fields to update'}), 400
 
         values.append(problem_id)
-        query = f"UPDATE problems SET {', '.join(update_fields)} WHERE id = %s"
+        values.append(user_id)
+        query = f"UPDATE problems SET {', '.join(update_fields)} WHERE id = %s AND user_id = %s"
 
         cursor.execute(query, tuple(values))
         conn.commit()
@@ -774,11 +922,24 @@ def update_problem(problem_id):
 @app.route('/api/problems/<int:problem_id>', methods=['DELETE'])
 def delete_problem(problem_id):
     try:
+        user_id = request.args.get('user_id')
+        if not user_id:
+            data = request.get_json(silent=True) or {}
+            user_id = data.get('user_id')
+
+        if not user_id:
+            return jsonify({'error': 'user_id required'}), 400
+
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute('DELETE FROM problems WHERE id = %s', (problem_id,))
+        cursor.execute('DELETE FROM problems WHERE id = %s AND user_id = %s', (problem_id, user_id))
         conn.commit()
+
+        if cursor.rowcount == 0:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Problem not found'}), 404
 
         cursor.close()
         conn.close()
@@ -803,7 +964,7 @@ def analytics_by_difficulty():
         cursor.execute(
             '''SELECT difficulty, COUNT(*) as count
                FROM problems
-               WHERE user_id = %s
+               WHERE user_id = %s AND status IN ('Solved', 'Revisit')
                GROUP BY difficulty''',
             (user_id,)
         )
@@ -831,7 +992,7 @@ def analytics_by_topic():
         cursor.execute(
             '''SELECT topic, COUNT(*) as count
                FROM problems
-               WHERE user_id = %s
+               WHERE user_id = %s AND status IN ('Solved', 'Revisit')
                GROUP BY topic
                ORDER BY count DESC''',
             (user_id,)
@@ -860,7 +1021,7 @@ def analytics_points_over_time():
         cursor.execute(
             '''SELECT DATE(created_at) as date, SUM(points) as total_points
                FROM problems
-               WHERE user_id = %s
+               WHERE user_id = %s AND status IN ('Solved', 'Revisit')
                GROUP BY DATE(created_at)
                ORDER BY date ASC''',
             (user_id,)
@@ -895,28 +1056,61 @@ def analytics_summary():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Total problems
         cursor.execute(
-            'SELECT COUNT(*) as total FROM problems WHERE user_id = %s',
+            '''SELECT
+                   COUNT(*) as tracked_problems,
+                   SUM(CASE WHEN status IN ('Solved', 'Revisit') THEN 1 ELSE 0 END) as total_problems,
+                   COALESCE(SUM(CASE WHEN status IN ('Solved', 'Revisit') THEN points ELSE 0 END), 0) as total_points,
+                   SUM(CASE WHEN status = 'To-Do' THEN 1 ELSE 0 END) as todo_problems,
+                   SUM(CASE WHEN status = 'In Progress' THEN 1 ELSE 0 END) as in_progress_problems,
+                   SUM(CASE WHEN status = 'Revisit' THEN 1 ELSE 0 END) as revisit_problems
+               FROM problems
+               WHERE user_id = %s''',
             (user_id,)
         )
-        total = cursor.fetchone()['total']
-
-        # Total points
-        cursor.execute(
-            'SELECT SUM(points) as total_points FROM problems WHERE user_id = %s',
-            (user_id,)
-        )
-        points_result = cursor.fetchone()
-        total_points = points_result['total_points'] if points_result['total_points'] else 0
+        summary = cursor.fetchone() or {}
 
         cursor.close()
         conn.close()
 
         return jsonify({
-            'total_problems': total,
-            'total_points': total_points
+            'total_problems': int(summary.get('total_problems') or 0),
+            'total_solved': int(summary.get('total_problems') or 0),
+            'tracked_problems': int(summary.get('tracked_problems') or 0),
+            'todo_problems': int(summary.get('todo_problems') or 0),
+            'in_progress_problems': int(summary.get('in_progress_problems') or 0),
+            'revisit_problems': int(summary.get('revisit_problems') or 0),
+            'total_points': int(summary.get('total_points') or 0)
         }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/analytics/status', methods=['GET'])
+def analytics_by_status():
+    try:
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'user_id required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            '''SELECT status, COUNT(*) as count
+               FROM problems
+               WHERE user_id = %s
+               GROUP BY status
+               ORDER BY FIELD(status, 'To-Do', 'In Progress', 'Solved', 'Revisit')''',
+            (user_id,)
+        )
+        results = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify(results), 200
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -956,7 +1150,7 @@ def sync_leetcode():
             title = question['title']
             difficulty = question['difficulty']
             topic = 'LeetCode'
-            points = {'Easy': 10, 'Medium': 25, 'Hard': 50}.get(difficulty, 10)
+            points = calculate_problem_points(difficulty, 'Solved')
 
             cursor.execute(
                 'SELECT id FROM problems WHERE user_id = %s AND number = %s',
@@ -967,17 +1161,17 @@ def sync_leetcode():
             if existing:
                 cursor.execute(
                     '''UPDATE problems
-                       SET name = %s, difficulty = %s, topic = %s, points = %s
+                       SET name = %s, difficulty = %s, topic = %s, status = %s, points = %s
                        WHERE id = %s''',
-                    (title, difficulty, topic, points, existing['id'])
+                    (title, difficulty, topic, 'Solved', points, existing['id'])
                 )
                 updated += 1
             else:
                 cursor.execute(
                     '''INSERT INTO problems
-                       (user_id, number, name, difficulty, topic, summary, notes, points)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''',
-                    (user_id, number, title, difficulty, topic, '', '', points)
+                       (user_id, number, name, difficulty, topic, status, summary, notes, points)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                    (user_id, number, title, difficulty, topic, 'Solved', '', '', points)
                 )
                 added += 1
 
@@ -1015,6 +1209,18 @@ def upload_resume():
 
         if not file.filename.lower().endswith('.pdf'):
             return jsonify({'error': 'Only PDF files allowed'}), 400
+
+        if not S3_BUCKET:
+            return jsonify({'error': 'S3 bucket is not configured'}), 500
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if not user_exists(cursor, user_id):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+        cursor.close()
+        conn.close()
 
         # Generate unique filename
         file_extension = file.filename.rsplit('.', 1)[1].lower()
@@ -1161,6 +1367,11 @@ def get_notes(problem_id):
         conn = get_db_connection()
         cursor = conn.cursor()
 
+        if not problem_belongs_to_user(cursor, problem_id, user_id):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Problem not found'}), 404
+
         cursor.execute(
             'SELECT * FROM problem_notes WHERE problem_id = %s AND user_id = %s',
             (problem_id, user_id)
@@ -1179,7 +1390,7 @@ def get_notes(problem_id):
 @app.route('/api/notes', methods=['POST'])
 def create_or_update_notes():
     try:
-        data = request.json
+        data = request.json or {}
         problem_id = data.get('problem_id')
         user_id = data.get('user_id')
         approach = data.get('approach', '')
@@ -1195,6 +1406,11 @@ def create_or_update_notes():
 
         conn = get_db_connection()
         cursor = conn.cursor()
+
+        if not problem_belongs_to_user(cursor, problem_id, user_id):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Problem not found'}), 404
 
         cursor.execute(
             'SELECT id FROM problem_notes WHERE problem_id = %s AND user_id = %s',
@@ -1247,6 +1463,11 @@ def delete_notes(problem_id):
         conn = get_db_connection()
         cursor = conn.cursor()
 
+        if not problem_belongs_to_user(cursor, problem_id, user_id):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Problem not found'}), 404
+
         cursor.execute(
             'DELETE FROM problem_notes WHERE problem_id = %s AND user_id = %s',
             (problem_id, user_id)
@@ -1280,7 +1501,9 @@ def suggest_problems():
         cursor = conn.cursor()
 
         cursor.execute(
-            'SELECT number, name, difficulty, topic FROM problems WHERE user_id = %s',
+            '''SELECT number, name, difficulty, topic
+               FROM problems
+               WHERE user_id = %s AND status IN ('Solved', 'Revisit')''',
             (user_id,)
         )
         solved_problems = cursor.fetchall()
@@ -1484,7 +1707,9 @@ def get_leaderboard():
 
         cursor.execute(
             '''SELECT u.id as user_id, u.name, u.email,
-                      SUM(p.points) as total_points, COUNT(p.id) as total_problems
+                      COALESCE(SUM(CASE WHEN p.status IN ('Solved', 'Revisit') THEN p.points ELSE 0 END), 0) as total_points,
+                      COUNT(CASE WHEN p.status IN ('Solved', 'Revisit') THEN p.id END) as total_problems,
+                      COUNT(p.id) as tracked_problems
                FROM users u
                LEFT JOIN problems p ON u.id = p.user_id
                GROUP BY u.id
@@ -2449,6 +2674,9 @@ def health_check():
 
 @app.route("/debug/db")
 def debug_db():
+    if not app.debug and os.getenv('ENABLE_DEBUG_DB') != 'true':
+        return {"status": "disabled"}, 404
+
     try:
         conn = pymysql.connect(
             host=DB_CONFIG['host'],
@@ -2457,6 +2685,7 @@ def debug_db():
             database=DB_CONFIG['database'],
             port=3306
         )
+        conn.close()
         return {"status": "connected"}
     except Exception as e:
         return {"status": "error", "details": str(e)}

@@ -285,7 +285,7 @@ export default function Upload() {
               <div className="card-body">
                 <h5 className="card-title">🤖 AI-Powered Analysis</h5>
                 <p className="card-text">
-                  Get instant feedback on your resume using Google's Gemini AI:
+                  Get instant feedback on your resume using Gemini AI:
                 </p>
                 <ul className="text-muted small">
                   <li>Overall impression & strengths</li>
@@ -325,8 +325,8 @@ export default function Upload() {
                 <ul className="text-muted small">
                   <li>Only accessible by you</li>
                   <li>Protected by AWS IAM policies</li>
-                  <li>AI analysis is instant & private</li>
-                  <li>Never shared with third parties</li>
+                  <li>Resume text is sent to Gemini for analysis</li>
+                  <li>Review your retention policies before production use</li>
                 </ul>
               </div>
             </div>

@@ -10,6 +10,8 @@ import { FaClipboardList, FaChartLine, FaRobot, FaUsers } from 'react-icons/fa';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
 
+const COMPLETED_STATUSES = new Set(['Solved', 'Revisit']);
+
 export default function Home() {
   const router = useRouter();
   const [userName, setUserName] = useState('');
@@ -116,15 +118,16 @@ export default function Home() {
       ]);
 
       const problems = Array.isArray(problemsRes.data) ? problemsRes.data : [];
-      const totalPoints = problems.reduce((sum, problem) => sum + (Number(problem.points) || 0), 0);
-      const currentStreak = computeCurrentStreak(problems);
+      const completedProblems = problems.filter((problem) => COMPLETED_STATUSES.has(problem.status || 'Solved'));
+      const totalPoints = completedProblems.reduce((sum, problem) => sum + (Number(problem.points) || 0), 0);
+      const currentStreak = computeCurrentStreak(completedProblems);
 
       setStats({
-        totalProblems: problems.length,
+        totalProblems: completedProblems.length,
         totalPoints,
         currentStreak
       });
-      setWeeklyActivityData(buildWeeklyActivityData(problems));
+      setWeeklyActivityData(buildWeeklyActivityData(completedProblems));
       setLeaderboard(Array.isArray(leaderboardRes.data) ? leaderboardRes.data : []);
     } catch (error) {
       console.error('Error fetching home data:', error);
@@ -330,5 +333,4 @@ export default function Home() {
     </div>
   );
 }
-
 
